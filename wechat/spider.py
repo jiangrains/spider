@@ -135,5 +135,7 @@ def response(flow):
 				#print(html)
 				#print("-----------------------------------")
 
-				#pattern = re.compile(r'hello')
-				#match1 = pattern.match('hello world!')
+				#pattern = re.compile(r'var msgList = (.*?);')
+				#match1 = pattern.search(content).groups()
+				#msgList = match1[0]
+				#msgList = json.load(msgList)
