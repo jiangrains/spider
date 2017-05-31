@@ -5,19 +5,44 @@ import datetime
 import json
 import re
 
+from xml.sax.saxutils import unescape
+
 mongodbauth=False
 username="jiangdunchuan"
 password="jiangdunchuan"
 dbname="wechat"
-collectionname="articles"
+collection_official_accounts="official_accounts"
+collection_articles="articles"
 dbaddress="localhost:27017"
 
 
-def check_url_query(query):
-	if ("__biz" in query) and ("mid" in query) and ("idx" in query):
-		return True
-	else:
-		return False
+html_unescape_table = {
+	"&quot;":"\"",
+	"&apos;":"\'",
+	"&nbsp;":" ",
+	"&amp;":"&",
+	}
+
+def html_unescape(text):
+	return unescape(text, html_unescape_table)
+
+
+def get_article(app_msg_ext_info):
+	pattern_biz = re.compile(r"__biz=(.*?)&")
+	pattern_mid = re.compile(r"mid=(.*?)&")
+	pattern_idx = re.compile(r"idx=(.*?)&")
+	title = app_msg_ext_info["title"]
+	content_url = app_msg_ext_info["content_url"]
+	__biz = pattern_biz.search(content_url).group(1)
+	mid = pattern_mid.search(content_url).group(1)
+	idx = pattern_idx.search(content_url).group(1)
+	article = {
+		"title":title, 
+		"__biz":__biz, 
+		"mid":mid,
+		"idx":idx
+	}
+	return article
 
 
 
@@ -45,12 +70,12 @@ def response(flow):
 
 			content = response.content
 
-			html = BeautifulSoup(content, "html.parser")
-			rich_media_content = html.find("div", class_="rich_media_content", id="js_content")
-			user = html.find("a", id="post-user")
-			date = html.find("em", id="post-date")
-			title = html.find(id="activity-name")
-			tag = html.find("span", id="copyright_logo")
+			document = BeautifulSoup(content, "html.parser")
+			rich_media_content = document.find("div", class_="rich_media_content", id="js_content")
+			user = document.find("a", id="post-user")
+			date = document.find("em", id="post-date")
+			title = document.find(id="activity-name")
+			tag = document.find("span", id="copyright_logo")
 			url = flow.request.pretty_url
 
 			print("user:%s date:%s title:%s" % (user.get_text(), date.get_text(), title.get_text().strip()))
@@ -61,7 +86,7 @@ def response(flow):
 			else:
 				client = MongoClient('mongodb://%s' % dbaddress)
 			db=client[dbname]
-			collection=db[collectionname]
+			collection=db[collection_articles]
 
 			if collection.find({"__biz":__biz,"mid":mid,"idx":idx}).count() != 0:
 				print("Warning:Find Duplicate articles(%s)" % flow.request.pretty_url)
@@ -110,7 +135,7 @@ def response(flow):
 				else:
 					client = MongoClient('mongodb://%s' % dbaddress)
 				db=client[dbname]
-				collection=db[collectionname]
+				collection=db[collection_articles]
 
 				collection.update({"__biz":__biz,"mid":mid,"idx":idx}, {"$set":{"like_num":like_num, "read_num":read_num, "last_modify_time":datetime.datetime.utcnow()}})
 				client.close()
@@ -127,15 +152,63 @@ def response(flow):
 				__biz = query["__biz"]
 
 
-				#content = response.content
-				#content = content.replace("&quot;", '\"')
+				content = response.text
+				
+				document = BeautifulSoup(content, "html.parser")
+				user = document.find("strong", class_="profile_nickname", id="nickname")
+				nickname = user.get_text().strip()
+				print("user:%s" % nickname)
 
-				#html = BeautifulSoup(content, "html.parser")
+				content = html_unescape(content)
 				#print("-----------------------------------")
-				#print(html)
+				#print(content)
 				#print("-----------------------------------")
+				pattern = re.compile(r"var msgList = '(.*?)';")
+				match = pattern.search(content)
+				if match == None:
+					print("Error:Not found magList.")
+					return
+				msg_list_str = match.group(1)
+				#print("-----------------------------------")
+				#print("msgList is %s." % msg_list_str)
+				#print("-----------------------------------")
+				msg_list_json = json.loads(msg_list_str)
+				msg_list = msg_list_json["list"]
 
-				#pattern = re.compile(r'var msgList = (.*?);')
-				#match1 = pattern.search(content).groups()
-				#msgList = match1[0]
-				#msgList = json.load(msgList)
+				articles = []
+				for msg_item in msg_list:
+					if len(articles) == 10:
+						break
+					#print("-----------------------------------")	
+					#print(msg_item)
+					#print("-----------------------------------")
+					comm_msg_info = msg_item["comm_msg_info"]
+					msg_type = comm_msg_info["type"]
+					if msg_type != 49:
+						print("Notice:Recv a message type is %d nickname:%s." % (msg_type, nickname))
+						continue
+					app_msg_ext_info = msg_item["app_msg_ext_info"]
+					article = get_article(app_msg_ext_info)
+					articles.append(article)
+
+					if app_msg_ext_info["is_multi"] == 1:
+						msg_list_sub = app_msg_ext_info["multi_app_msg_item_list"]
+						for msg_item_sub in msg_list_sub:
+							if len(articles) == 10:
+								break
+							article = get_article(msg_item_sub)
+							articles.append(article)
+
+				print("-----------------------------------")
+				print(articles)
+				print("-----------------------------------")
+
+				if mongodbauth:
+					client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
+				else:
+					client = MongoClient('mongodb://%s' % dbaddress)
+				db=client[dbname]
+				collection=db[collection_official_accounts]
+
+				collection.update({"__biz":__biz,"nickname":nickname}, {"$set":{"articles":articles}}, True, False)
+				client.close()
