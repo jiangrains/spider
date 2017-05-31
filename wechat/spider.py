@@ -5,11 +5,12 @@ import datetime
 import json
 import re
 
+mongodbauth=True
 username="jiangdunchuan"
 password="jiangdunchuan"
 dbname="wechat"
 collectionname="articles"
-dbaddress="localhost"
+dbaddress="localhost:27017"
 
 
 def check_url_query(query):
@@ -55,7 +56,10 @@ def response(flow):
 			print("user:%s date:%s title:%s" % (user.get_text(), date.get_text(), title.get_text().strip()))
 			print("tag is %s" % ("None" if tag == None else tag.get_text()))
 
-			client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
+			if mongodbauth:
+				client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
+			else:
+				client = MongoClient('mongodb://%s' % dbaddress)
 			db=client[dbname]
 			collection=db[collectionname]
 
@@ -101,7 +105,10 @@ def response(flow):
 					print("Error:like_num or read_num is invalid!")
 					return
 
-				client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
+				if mongodbauth:
+					client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
+				else:
+					client = MongoClient('mongodb://%s' % dbaddress)
 				db=client[dbname]
 				collection=db[collectionname]
 
@@ -120,13 +127,13 @@ def response(flow):
 				__biz = query["__biz"]
 
 
-				content = response.content
-				content = content.replace("&quot;", '\"')
+				#content = response.content
+				#content = content.replace("&quot;", '\"')
 
-				html = BeautifulSoup(content, "html.parser")
-				print("-----------------------------------")
-				print(html)
-				print("-----------------------------------")
+				#html = BeautifulSoup(content, "html.parser")
+				#print("-----------------------------------")
+				#print(html)
+				#print("-----------------------------------")
 
-				pattern = re.compile(r'hello')
-				match1 = pattern.match('hello world!')
+				#pattern = re.compile(r'hello')
+				#match1 = pattern.match('hello world!')
