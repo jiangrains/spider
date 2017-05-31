@@ -5,7 +5,7 @@ import datetime
 import json
 import re
 
-mongodbauth=True
+mongodbauth=False
 username="jiangdunchuan"
 password="jiangdunchuan"
 dbname="wechat"
