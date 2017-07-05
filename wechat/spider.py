@@ -15,6 +15,8 @@ collection_official_accounts="official_accounts"
 collection_articles="articles"
 dbaddress="localhost:27017"
 
+account_save_max_articles=15 #若该值为0，则代表保存截获到的所有文章列表
+
 
 html_unescape_table = {
 	"&quot;":"\"",
@@ -27,17 +29,21 @@ def html_unescape(text):
 	return unescape(text, html_unescape_table)
 
 
-def get_article(app_msg_ext_info):
+def get_article(app_msg_ext_info, date):
 	pattern_biz = re.compile(r"__biz=(.*?)&")
 	pattern_mid = re.compile(r"mid=(.*?)&")
 	pattern_idx = re.compile(r"idx=(.*?)&")
+	pattern_slash = re.compile(r"\\/")
 	title = app_msg_ext_info["title"]
 	content_url = app_msg_ext_info["content_url"]
+	content_url = re.sub(pattern_slash, r"/", content_url)
 	__biz = pattern_biz.search(content_url).group(1)
 	mid = pattern_mid.search(content_url).group(1)
 	idx = pattern_idx.search(content_url).group(1)
 	article = {
-		"title":title, 
+		"title":title,
+		"content_url":content_url,
+		"datetime":date,
 		"__biz":__biz, 
 		"mid":mid,
 		"idx":idx
@@ -134,23 +140,46 @@ def response(flow):
 					client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
 				else:
 					client = MongoClient('mongodb://%s' % dbaddress)
-				db=client[dbname]
-				collection=db[collection_articles]
+				db = client[dbname]
+				collection = db[collection_articles]
 
 				collection.update({"__biz":__biz,"mid":mid,"idx":idx}, {"$set":{"like_num":like_num, "read_num":read_num, "last_modify_time":datetime.datetime.utcnow()}})
 				client.close()
 
 				print("like_num:%s read_num:%s" % (like_num, read_num))
 
+		elif (flow.request.method == "GET" and len(path_components) == 2 and path_components[0] == "mp" and path_components[1] == "appmsg_comment"):
+			if not (("__biz" in query) and ("appmsgid" in query) and ("idx" in query) and ("action" in query)):
+				print("Error:url query format is wrong! Location 3.")
+				return
+
+			if (query["action"] == "getcomment"):
+				__biz = query["__biz"]
+				mid = query["appmsgid"]
+				idx = query["idx"]			
+
+				data = json.loads(response.content)
+				if "elected_comment" in data.keys():
+					comments = data["elected_comment"]
+
+					if mongodbauth:
+						client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
+					else:
+						client = MongoClient('mongodb://%s' % dbaddress)
+					db = client[dbname]
+					collection = db[collection_articles]
+					collection.update({"__biz":__biz,"mid":mid,"idx":idx}, {"$set":{"elected_comment":comments, "last_modify_time":datetime.datetime.utcnow()}})
+					client.close()
+				
+
 		elif (flow.request.method == "GET" and len(path_components) == 2 and path_components[0] == "mp" and path_components[1] == "profile_ext"):
 
 			if not (("__biz" in query) and ("action" in query)):
-				print("Error:url query format is wrong! Location 3.")
+				print("Error:url query format is wrong! Location 4.")
 				return
 
 			if (query["action"] == "home"):
 				__biz = query["__biz"]
-
 
 				content = response.text
 				
@@ -177,38 +206,45 @@ def response(flow):
 
 				articles = []
 				for msg_item in msg_list:
-					if len(articles) == 10:
+					if (account_save_max_articles != 0) and (len(articles) == account_save_max_articles):
+						print(len(articles))
 						break
 					#print("-----------------------------------")	
 					#print(msg_item)
 					#print("-----------------------------------")
 					comm_msg_info = msg_item["comm_msg_info"]
 					msg_type = comm_msg_info["type"]
+					date = comm_msg_info["datetime"]
 					if msg_type != 49:
 						print("Notice:Recv a message type is %d nickname:%s." % (msg_type, nickname))
 						continue
 					app_msg_ext_info = msg_item["app_msg_ext_info"]
-					article = get_article(app_msg_ext_info)
+					article = get_article(app_msg_ext_info, date)
 					articles.append(article)
 
 					if app_msg_ext_info["is_multi"] == 1:
 						msg_list_sub = app_msg_ext_info["multi_app_msg_item_list"]
 						for msg_item_sub in msg_list_sub:
-							if len(articles) == 10:
+							if (account_save_max_articles != 0) and (len(articles) == account_save_max_articles):
+								print(len(articles))
 								break
-							article = get_article(msg_item_sub)
+							article = get_article(msg_item_sub, date)
 							articles.append(article)
 
-				print("-----------------------------------")
-				print(articles)
-				print("-----------------------------------")
+				#print("-----------------------------------")
+				#print(articles)
+				#print("-----------------------------------")
 
 				if mongodbauth:
 					client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
 				else:
 					client = MongoClient('mongodb://%s' % dbaddress)
-				db=client[dbname]
-				collection=db[collection_official_accounts]
+				db = client[dbname]
+				collection = db[collection_official_accounts]
 
 				collection.update({"__biz":__biz,"nickname":nickname}, {"$set":{"articles":articles}}, True, False)
-				client.close()
+				client.close()							
+
+			elif (query["action"] == "getmsg"):
+				#must todo something.
+				pass
