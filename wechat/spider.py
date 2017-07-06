@@ -15,7 +15,7 @@ collection_official_accounts="official_accounts"
 collection_articles="articles"
 dbaddress="localhost:27017"
 
-account_save_max_articles=15 #若该值为0，则代表保存截获到的所有文章列表
+account_save_max_articles=0 #若该值为0，则代表保存截获到的所有文章列表
 
 
 html_unescape_table = {
@@ -49,6 +49,24 @@ def get_article(app_msg_ext_info, date):
 		"idx":idx
 	}
 	return article
+
+
+
+def insert_article(articles, article):
+	insert_flag = True
+	for tmp in articles:
+		if ((tmp["__biz"] == article["__biz"]) and (tmp["mid"] == article["mid"]) and (tmp["idx"] == article["idx"])):
+			tmp = article
+			insert_flag = False
+			break
+
+	if insert_flag:
+		articles.append(article)
+
+	return articles
+
+
+
 
 
 
@@ -178,11 +196,23 @@ def response(flow):
 				print("Error:url query format is wrong! Location 4.")
 				return
 
-			if (query["action"] == "home"):
-				__biz = query["__biz"]
+			if mongodbauth:
+				client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
+			else:
+				client = MongoClient('mongodb://%s' % dbaddress)
+			db = client[dbname]
+			collection = db[collection_official_accounts]
 
+			__biz = query["__biz"]
+			account = collection.find_one({"__biz":__biz})
+			if (account == None):
+				print("New Account which __biz:%s" % __biz)
+			else:
+				print("Find an exist account which __biz:%s articles:%d" % (__biz, len(account["articles"])))
+
+			#########历史信息页第一个请求##########
+			if (query["action"] == "home"):
 				content = response.text
-				
 				document = BeautifulSoup(content, "html.parser")
 				user = document.find("strong", class_="profile_nickname", id="nickname")
 				nickname = user.get_text().strip()
@@ -204,12 +234,16 @@ def response(flow):
 				msg_list_json = json.loads(msg_list_str)
 				msg_list = msg_list_json["list"]
 
-				articles = []
+				if account == None:
+					articles = []
+				else:
+					articles = account["articles"]
+
 				for msg_item in msg_list:
 					if (account_save_max_articles != 0) and (len(articles) == account_save_max_articles):
 						print(len(articles))
 						break
-					#print("-----------------------------------")	
+					#print("-----------------------------------")
 					#print(msg_item)
 					#print("-----------------------------------")
 					comm_msg_info = msg_item["comm_msg_info"]
@@ -220,7 +254,7 @@ def response(flow):
 						continue
 					app_msg_ext_info = msg_item["app_msg_ext_info"]
 					article = get_article(app_msg_ext_info, date)
-					articles.append(article)
+					articles = insert_article(articles, article)
 
 					if app_msg_ext_info["is_multi"] == 1:
 						msg_list_sub = app_msg_ext_info["multi_app_msg_item_list"]
@@ -229,22 +263,65 @@ def response(flow):
 								print(len(articles))
 								break
 							article = get_article(msg_item_sub, date)
-							articles.append(article)
+							articles = insert_article(articles, article)
 
 				#print("-----------------------------------")
 				#print(articles)
 				#print("-----------------------------------")
 
-				if mongodbauth:
-					client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
+				if account == None:
+					collection.update({"__biz":__biz,"nickname":nickname}, {"$set":{"articles":articles}}, True, False)
 				else:
-					client = MongoClient('mongodb://%s' % dbaddress)
-				db = client[dbname]
-				collection = db[collection_official_accounts]
-
-				collection.update({"__biz":__biz,"nickname":nickname}, {"$set":{"articles":articles}}, True, False)
+					collection.update({"__biz":__biz}, {"$set":{"articles":articles}}, True, False)
 				client.close()							
 
-			elif (query["action"] == "getmsg"):
-				#must todo something.
-				pass
+			#########历史信息页后续的下拉请求##########
+			elif (query["action"] == "getmsg" and account != None):
+				data = json.loads(response.content)
+				general_msg_list_str = data["general_msg_list"]
+				#print("-----------------------------------")
+				#print(general_msg_list_str)
+				#print("-----------------------------------")
+				general_msg_list = eval(general_msg_list_str)
+				msg_list = general_msg_list["list"]
+
+				if account == None:
+					articles = []
+				else:
+					articles = account["articles"]
+
+				for msg_item in msg_list:
+					if (account_save_max_articles != 0) and (len(articles) == account_save_max_articles):
+						print(len(articles))
+						break
+					#print("-----------------------------------")
+					#print(msg_item)
+					#print("-----------------------------------")
+					comm_msg_info = msg_item["comm_msg_info"]
+					msg_type = comm_msg_info["type"]
+					date = comm_msg_info["datetime"]
+					if msg_type != 49:
+						print("Notice:Recv a message type is %d nickname:%s." % (msg_type, nickname))
+						continue
+					app_msg_ext_info = msg_item["app_msg_ext_info"]
+					article = get_article(app_msg_ext_info, date)
+					articles = insert_article(articles, article)
+
+					if app_msg_ext_info["is_multi"] == 1:
+						msg_list_sub = app_msg_ext_info["multi_app_msg_item_list"]
+						for msg_item_sub in msg_list_sub:
+							if (account_save_max_articles != 0) and (len(articles) == account_save_max_articles):
+								print(len(articles))
+								break
+							article = get_article(msg_item_sub, date)
+							articles = insert_article(articles, article)
+
+				#print("-----------------------------------")
+				#print(articles)
+				#print("-----------------------------------")
+
+				collection.update({"__biz":__biz}, {"$set":{"articles":articles}}, True, False)
+				client.close()
+
+			else:
+				client.close()				
