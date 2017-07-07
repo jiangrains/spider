@@ -29,6 +29,18 @@ def html_unescape(text):
 	return unescape(text, html_unescape_table)
 
 
+def get_db_connection(dbname, collectionname):
+	if mongodbauth:
+		client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
+	else:
+		client = MongoClient('mongodb://%s' % dbaddress)
+	db=client[dbname]
+	collection=db[collectionname]
+
+	return (client, collection)
+
+
+
 def get_article(app_msg_ext_info, date):
 	pattern_biz = re.compile(r"__biz=(.*?)&")
 	pattern_mid = re.compile(r"mid=(.*?)&")
@@ -51,7 +63,35 @@ def get_article(app_msg_ext_info, date):
 	return article
 
 
+def get_detail_article(__biz, mid, idx, flow, document):
+	rich_media_content = document.find("div", class_="rich_media_content", id="js_content")
+	user = document.find("a", id="post-user")
+	date = document.find("em", id="post-date")
+	title = document.find(id="activity-name")
+	tag = document.find("span", id="copyright_logo")
+	url = flow.request.pretty_url
 
+	print("user:%s date:%s title:%s" % (user.get_text(), date.get_text(), title.get_text().strip()))
+	print("tag is %s" % ("None" if tag == None else tag.get_text()))
+
+	detail_article = {"__biz":__biz,
+		"mid":mid,
+		"idx":idx,
+		"title":title.get_text().strip(),
+		"user":user.get_text(),
+		"date":date.get_text(),
+		"tag":"None" if tag == None else tag.get_text(),
+		"url":url,
+		#"like_num":0,
+		#"read_num":0,
+		"create_time":datetime.datetime.utcnow(),
+		"last_modify_time":datetime.datetime.utcnow(),
+		"rich_media_content":rich_media_content.get_text()}
+
+	return detail_article	
+
+
+##将article更新进入articles列表中，如果是新文章则直接插入到最尾，否则覆盖原来的文章
 def insert_article(articles, article):
 	insert_flag = True
 	for tmp in articles:
@@ -66,7 +106,38 @@ def insert_article(articles, article):
 	return articles
 
 
+##解析msglist json字串，将其中的article更新至articles列表中
+def parse_msglist(__biz, msglist, articles):
+	for msg_item in msg_list:
+		if (account_save_max_articles != 0) and (len(articles) == account_save_max_articles):
+			print(len(articles))
+			break
+		#print("-----------------------------------")
+		#print(msg_item)
+		#print("-----------------------------------")
+		comm_msg_info = msg_item["comm_msg_info"]
+		msg_type = comm_msg_info["type"]
+		date = comm_msg_info["datetime"]
+		if msg_type != 49:
+			print("Notice:Recv a message type is %d __biz:%s." % (msg_type, __biz))
+			continue
+		app_msg_ext_info = msg_item["app_msg_ext_info"]
+		article = get_article(app_msg_ext_info, date)
+		articles = insert_article(articles, article)
 
+		if app_msg_ext_info["is_multi"] == 1:
+			msg_list_sub = app_msg_ext_info["multi_app_msg_item_list"]
+			for msg_item_sub in msg_list_sub:
+				if (account_save_max_articles != 0) and (len(articles) == account_save_max_articles):
+					print(len(articles))
+					break
+				article = get_article(msg_item_sub, date)
+				articles = insert_article(articles, article)
+
+	#print("-----------------------------------")
+	#print(articles)
+	#print("-----------------------------------")
+	return articles
 
 
 
@@ -89,48 +160,17 @@ def response(flow):
 			__biz = query["__biz"]
 			mid = query["mid"]
 			idx = query["idx"]
-
 			print("__biz:%s mid:%s idx:%s" % (__biz, mid, idx))
 
 			content = response.content
-
 			document = BeautifulSoup(content, "html.parser")
-			rich_media_content = document.find("div", class_="rich_media_content", id="js_content")
-			user = document.find("a", id="post-user")
-			date = document.find("em", id="post-date")
-			title = document.find(id="activity-name")
-			tag = document.find("span", id="copyright_logo")
-			url = flow.request.pretty_url
+			detail_article = get_detail_article(__biz, mid, idx, flow, document)
 
-			print("user:%s date:%s title:%s" % (user.get_text(), date.get_text(), title.get_text().strip()))
-			print("tag is %s" % ("None" if tag == None else tag.get_text()))
-
-			if mongodbauth:
-				client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
-			else:
-				client = MongoClient('mongodb://%s' % dbaddress)
-			db=client[dbname]
-			collection=db[collection_articles]
-
+			client, collection = get_db_connection(dbname, collection_articles)
 			if collection.find({"__biz":__biz,"mid":mid,"idx":idx}).count() != 0:
 				print("Warning:Find Duplicate articles(%s)" % flow.request.pretty_url)
 				return 
-
-			post = {"__biz":__biz,
-					"mid":mid,
-					"idx":idx,
-					"title":title.get_text().strip(),
-					"user":user.get_text(),
-					"date":date.get_text(),
-					"tag":"None" if tag == None else tag.get_text(),
-					"url":flow.request.pretty_url,
-#					"like_num":0,
-#					"read_num":0,
-					"create_time":datetime.datetime.utcnow(),
-					"last_modify_time":datetime.datetime.utcnow(),
-					"rich_media_content":rich_media_content.get_text()}
-			collection.insert(post)
-
+			collection.insert(detail_article)
 			client.close()
 
 		elif (flow.request.method == "POST" and len(path_components) == 2 and path_components[0] == "mp" and path_components[1] == "getappmsgext"):
@@ -154,13 +194,7 @@ def response(flow):
 					print("Error:like_num or read_num is invalid!")
 					return
 
-				if mongodbauth:
-					client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
-				else:
-					client = MongoClient('mongodb://%s' % dbaddress)
-				db = client[dbname]
-				collection = db[collection_articles]
-
+				client, collection = get_db_connection(dbname, collection_articles)
 				collection.update({"__biz":__biz,"mid":mid,"idx":idx}, {"$set":{"like_num":like_num, "read_num":read_num, "last_modify_time":datetime.datetime.utcnow()}})
 				client.close()
 
@@ -180,35 +214,26 @@ def response(flow):
 				if "elected_comment" in data.keys():
 					comments = data["elected_comment"]
 
-					if mongodbauth:
-						client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
-					else:
-						client = MongoClient('mongodb://%s' % dbaddress)
-					db = client[dbname]
-					collection = db[collection_articles]
+					client, collection = get_db_connection(dbname, collection_articles)
 					collection.update({"__biz":__biz,"mid":mid,"idx":idx}, {"$set":{"elected_comment":comments, "last_modify_time":datetime.datetime.utcnow()}})
 					client.close()
 				
-
 		elif (flow.request.method == "GET" and len(path_components) == 2 and path_components[0] == "mp" and path_components[1] == "profile_ext"):
 
 			if not (("__biz" in query) and ("action" in query)):
 				print("Error:url query format is wrong! Location 4.")
 				return
-
-			if mongodbauth:
-				client = MongoClient('mongodb://%s:%s@%s' % (username, password, dbaddress))
-			else:
-				client = MongoClient('mongodb://%s' % dbaddress)
-			db = client[dbname]
-			collection = db[collection_official_accounts]
-
+				
 			__biz = query["__biz"]
+
+			client, collection = get_db_connection(dbname, collection_official_accounts)
 			account = collection.find_one({"__biz":__biz})
 			if (account == None):
 				print("New Account which __biz:%s" % __biz)
+				articles = []
 			else:
 				print("Find an exist account which __biz:%s articles:%d" % (__biz, len(account["articles"])))
+				articles = account["articles"]
 
 			#########历史信息页第一个请求##########
 			if (query["action"] == "home"):
@@ -233,41 +258,7 @@ def response(flow):
 				#print("-----------------------------------")
 				msg_list_json = json.loads(msg_list_str)
 				msg_list = msg_list_json["list"]
-
-				if account == None:
-					articles = []
-				else:
-					articles = account["articles"]
-
-				for msg_item in msg_list:
-					if (account_save_max_articles != 0) and (len(articles) == account_save_max_articles):
-						print(len(articles))
-						break
-					#print("-----------------------------------")
-					#print(msg_item)
-					#print("-----------------------------------")
-					comm_msg_info = msg_item["comm_msg_info"]
-					msg_type = comm_msg_info["type"]
-					date = comm_msg_info["datetime"]
-					if msg_type != 49:
-						print("Notice:Recv a message type is %d nickname:%s." % (msg_type, nickname))
-						continue
-					app_msg_ext_info = msg_item["app_msg_ext_info"]
-					article = get_article(app_msg_ext_info, date)
-					articles = insert_article(articles, article)
-
-					if app_msg_ext_info["is_multi"] == 1:
-						msg_list_sub = app_msg_ext_info["multi_app_msg_item_list"]
-						for msg_item_sub in msg_list_sub:
-							if (account_save_max_articles != 0) and (len(articles) == account_save_max_articles):
-								print(len(articles))
-								break
-							article = get_article(msg_item_sub, date)
-							articles = insert_article(articles, article)
-
-				#print("-----------------------------------")
-				#print(articles)
-				#print("-----------------------------------")
+				articles = parse_msglist(__biz, msg_list, articles)
 
 				if account == None:
 					collection.update({"__biz":__biz,"nickname":nickname}, {"$set":{"articles":articles}}, True, False)
@@ -284,44 +275,11 @@ def response(flow):
 				#print("-----------------------------------")
 				general_msg_list = eval(general_msg_list_str)
 				msg_list = general_msg_list["list"]
-
-				if account == None:
-					articles = []
-				else:
-					articles = account["articles"]
-
-				for msg_item in msg_list:
-					if (account_save_max_articles != 0) and (len(articles) == account_save_max_articles):
-						print(len(articles))
-						break
-					#print("-----------------------------------")
-					#print(msg_item)
-					#print("-----------------------------------")
-					comm_msg_info = msg_item["comm_msg_info"]
-					msg_type = comm_msg_info["type"]
-					date = comm_msg_info["datetime"]
-					if msg_type != 49:
-						print("Notice:Recv a message type is %d nickname:%s." % (msg_type, nickname))
-						continue
-					app_msg_ext_info = msg_item["app_msg_ext_info"]
-					article = get_article(app_msg_ext_info, date)
-					articles = insert_article(articles, article)
-
-					if app_msg_ext_info["is_multi"] == 1:
-						msg_list_sub = app_msg_ext_info["multi_app_msg_item_list"]
-						for msg_item_sub in msg_list_sub:
-							if (account_save_max_articles != 0) and (len(articles) == account_save_max_articles):
-								print(len(articles))
-								break
-							article = get_article(msg_item_sub, date)
-							articles = insert_article(articles, article)
-
-				#print("-----------------------------------")
-				#print(articles)
-				#print("-----------------------------------")
+				articles = parse_msglist(__biz, msg_list, articles)
 
 				collection.update({"__biz":__biz}, {"$set":{"articles":articles}}, True, False)
 				client.close()
 
 			else:
-				client.close()				
+				client.close()
+
